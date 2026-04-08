@@ -1,0 +1,88 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  /* Dark mode (default) */
+  :root {
+    --bg-primary: #0a0e1a;
+    --bg-secondary: #060810;
+    --text-primary: #ffffff;
+    --text-secondary: #9ca3af;
+    --border-color: #00ff9d;
+  }
+  
+  /* Light mode */
+  .light {
+    --bg-primary: #f0f4f8;
+    --bg-secondary: #ffffff;
+    --text-primary: #1f2937;
+    --text-secondary: #6b7280;
+    --border-color: #3b82f6;
+  }
+  
+  body {
+    background-color: var(--bg-primary);
+    color: var(--text-primary);
+    font-family: 'Inter', sans-serif;
+    overflow: hidden;
+    transition: background-color 0.3s ease, color 0.3s ease;
+  }
+  
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  
+  ::-webkit-scrollbar-track {
+    background: var(--bg-secondary);
+  }
+  
+  ::-webkit-scrollbar-thumb {
+    background: #4b5563;
+    border-radius: 9999px;
+  }
+  
+  ::-webkit-scrollbar-thumb:hover {
+    background: #6b7280;
+  }
+  
+  #root {
+    height: 100vh;
+    overflow: hidden;
+  }
+}
+
+@layer components {
+  .radar-grid {
+    background-image: 
+      linear-gradient(rgba(0, 255, 157, 0.1) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(0, 255, 157, 0.1) 1px, transparent 1px);
+    background-size: 50px 50px;
+  }
+  
+  .glow-text {
+    text-shadow: 0 0 10px rgba(0, 255, 157, 0.5);
+  }
+  
+  .card-glow {
+    background-color: var(--bg-secondary);
+    backdrop-filter: blur(4px);
+    border: 1px solid rgba(0, 255, 157, 0.2);
+    border-radius: 0.5rem;
+  }
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+@keyframes radar-sweep {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.animate-pulse-slow {
+  animation: pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
