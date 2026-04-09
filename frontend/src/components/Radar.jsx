@@ -10,7 +10,7 @@ const RADAR_CONFIG = {
   GRID_SIZE: 50,
 };
 
-const Radar = () => {
+const Radar = ({ showPredictions = false }) => {
   const canvasRef = useRef(null);
   const animationRef = useRef(null);
   const sweepAngle = useRef(0);
@@ -23,7 +23,7 @@ const Radar = () => {
     
     const ctx = canvas.getContext('2d');
     
-    const drawRadarGrid = () => {
+    const drawRadarGrid = () => { 
       // Background
       ctx.fillStyle = '#0a1a2e';
       ctx.fillRect(0, 0, RADAR_CONFIG.WIDTH, RADAR_CONFIG.HEIGHT);
@@ -87,13 +87,51 @@ const Radar = () => {
       ctx.stroke();
     };
     
+    const drawPredictions = () => {
+      if (!showPredictions) return;
+      
+      state.aircraft.forEach(aircraft => {
+        if (!aircraft) return;
+        
+        ctx.beginPath();
+        ctx.setLineDash([5, 5]);
+        ctx.strokeStyle = 'rgba(0, 255, 157, 0.4)';
+        ctx.lineWidth = 1.5;
+        
+        let prevX = aircraft.x;
+        let prevY = aircraft.y;
+        
+        // Predict next 10 positions (20 seconds into future)
+        for (let i = 1; i <= 10; i++) {
+          const time = i * 2;
+          const speedInUnits = aircraft.speed / 3600;
+          const distance = speedInUnits * time;
+          const newX = aircraft.x + distance * Math.cos(aircraft.heading * Math.PI / 180);
+          const newY = aircraft.y + distance * Math.sin(aircraft.heading * Math.PI / 180);
+          
+          ctx.beginPath();
+          ctx.moveTo(prevX, prevY);
+          ctx.lineTo(newX, newY);
+          ctx.stroke();
+          
+          // Draw small dot at predicted position
+          ctx.beginPath();
+          ctx.arc(newX, newY, 2, 0, 2 * Math.PI);
+          ctx.fillStyle = 'rgba(0, 255, 157, 0.5)';
+          ctx.fill();
+          
+          prevX = newX;
+          prevY = newY;
+        }
+        
+        ctx.setLineDash([]);
+      });
+    };
+    
     const drawAircraft = () => {
       if (!state.aircraft || state.aircraft.length === 0) {
-        console.log('No aircraft to draw');
         return;
       }
-      
-      console.log(`Drawing ${state.aircraft.length} aircraft on radar`);
       
       state.aircraft.forEach(aircraft => {
         if (!aircraft) return;
@@ -193,6 +231,7 @@ const Radar = () => {
     const animate = () => {
       drawRadarGrid();
       drawConflictZones();
+      drawPredictions();
       drawAircraft();
       animationRef.current = requestAnimationFrame(animate);
     };
@@ -204,7 +243,7 @@ const Radar = () => {
         cancelAnimationFrame(animationRef.current);
       }
     };
-  }, [state.aircraft, state.conflicts]);
+  }, [state.aircraft, state.conflicts, showPredictions]);
   
   const handleMouseMove = (e) => {
     const canvas = canvasRef.current;
@@ -260,6 +299,7 @@ const Radar = () => {
       
       <div className="absolute bottom-4 left-4 text-xs text-atc-green/60 font-mono bg-black/50 px-2 py-1 rounded">
         RANGE: {RADAR_CONFIG.RANGE} NM | AIRCRAFT: {state.aircraft.length} | MODE: {state.isSimulating ? 'AUTO' : 'MANUAL'}
+        {showPredictions && <span className="ml-2 text-yellow-400"> | PREDICTIONS ON</span>}
       </div>
     </div>
   );

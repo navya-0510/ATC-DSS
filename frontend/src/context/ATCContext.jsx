@@ -1,5 +1,4 @@
 import React, { createContext, useContext, useReducer, useEffect, useCallback } from 'react';
-import { calculateDistance } from '../utils/calculations';
 
 const ATCContext = createContext();
 
@@ -13,11 +12,22 @@ const initialState = {
   simulationSpeed: 1,
 };
 
-function atcReducer(state, action) {
+//Helper function to calculate distance
+const calculateDistance = (a1, a2) => { //calculates distance b/w two aircraft
+  const dx = a1.x - a2.x;
+  const dy = a1.y - a2.y;
+  return Math.sqrt(dx * dx + dy * dy);
+};
+
+function atcReducer(state, action) { //manages state changes 
   switch (action.type) {
     case 'SET_AIRCRAFT':
       return { ...state, aircraft: action.payload };
     case 'ADD_AIRCRAFT':
+      //Prevent duplicates
+      if (state.aircraft.some(a => a.id === action.payload.id)) {
+        return state;
+      }
       return { ...state, aircraft: [...state.aircraft, action.payload] };
     case 'UPDATE_AIRCRAFT':
       return {
@@ -31,14 +41,14 @@ function atcReducer(state, action) {
         ...state,
         aircraft: state.aircraft.filter(a => a.id !== action.payload),
         conflicts: state.conflicts.filter(c => c.aircraft1 !== action.payload && c.aircraft2 !== action.payload),
-        alerts: state.alerts.filter(a => !a.aircraft.includes(action.payload)),
+        alerts: state.alerts.filter(a => !a.aircraft?.includes(action.payload)),
       };
     case 'SET_CONFLICTS':
       return { ...state, conflicts: action.payload };
     case 'SET_SUGGESTIONS':
       return { ...state, suggestions: action.payload };
     case 'ADD_ALERT':
-      const exists = state.alerts.some(a => a.message === action.payload.message && a.severity === action.payload.severity);
+      const exists = state.alerts.some(a => a.message === action.payload.message);
       if (!exists) {
         return { ...state, alerts: [action.payload, ...state.alerts].slice(0, 50) };
       }
@@ -48,6 +58,8 @@ function atcReducer(state, action) {
         ...state,
         alerts: state.alerts.filter(a => a.id !== action.payload),
       };
+    case 'CLEAR_ALL_ALERTS':
+      return { ...state, alerts: [] };
     case 'ADD_LOG':
       return { ...state, logs: [action.payload, ...state.logs].slice(0, 100) };
     case 'SET_SIMULATION':
@@ -62,37 +74,47 @@ function atcReducer(state, action) {
 export function ATCProvider({ children }) {
   const [state, dispatch] = useReducer(atcReducer, initialState);
 
-  const generateSuggestions = (aircraft1, aircraft2) => {
+  const generateSuggestions = (aircraft1, aircraft2) => {  //created resolution suggestions
     const suggestions = [];
     
     suggestions.push({
-      id: `sug-${Date.now()}-1`,
+      id: `sug-${Date.now()}-${Math.random()}`,
       type: 'altitude',
       aircraft: aircraft1.id,
-      action: `Descend to ${aircraft2.altitude - 1000} ft`,
+      action: `Descend to ${Math.floor(aircraft2.altitude - 1000)} ft`, //altitude 
       priority: 1,
       deviation: 1000,
       reasoning: `Descend ${aircraft1.id} to avoid ${aircraft2.id}`,
     });
     
     suggestions.push({
-      id: `sug-${Date.now()}-2`,
+      id: `sug-${Date.now()}-${Math.random()}`,
       type: 'heading',
-      aircraft: aircraft1.id,
-      action: `Turn right to ${(aircraft1.heading + 45) % 360}°`,
+      aircraft: aircraft1.id, //callsign
+      action: `Turn right to ${(aircraft1.heading + 45) % 360}°`, //heading 
       priority: 2,
       deviation: 45,
       reasoning: `Turn ${aircraft1.id} right to increase separation`,
     });
     
+    suggestions.push({
+      id: `sug-${Date.now()}-${Math.random()}`,
+      type: 'speed',
+      aircraft: aircraft1.id,
+      action: `Reduce speed to ${Math.max(200, aircraft1.speed - 50)} knots`, //speed
+      priority: 3,
+      deviation: 50,
+      reasoning: `Slow down to increase separation`,
+    });
+    
     return suggestions;
   };
 
-  const detectConflicts = useCallback(() => {
+  const detectConflicts = useCallback(() => { //detects conflict b/w aircraft
     const newConflicts = [];
     const allSuggestions = [];
     const newAlerts = [];
-    const conflictMap = new Map();
+    const processedPairs = new Set();
     
     for (let i = 0; i < state.aircraft.length; i++) {
       for (let j = i + 1; j < state.aircraft.length; j++) {
@@ -101,55 +123,46 @@ export function ATCProvider({ children }) {
         
         const distance = calculateDistance(a1, a2);
         const altitudeDiff = Math.abs(a1.altitude - a2.altitude);
+        const pairKey = `${a1.id}-${a2.id}`;
         
+        if (processedPairs.has(pairKey)) continue;
+        processedPairs.add(pairKey);
+        
+        // Conflict detection
         if (distance < 100 || altitudeDiff < 2000) {
           let severity = 'MEDIUM';
           let message = '';
           
           if (distance < 50 && altitudeDiff < 1000) {
             severity = 'CRITICAL';
-            message = `⚠️ CRITICAL: ${a1.id} and ${a2.id} on collision course! Distance: ${Math.floor(distance)} units`;
+            message = `CRITICAL: ${a1.id} and ${a2.id} on collision course! Distance: ${Math.floor(distance)} units`;
           } else if (distance < 80 && altitudeDiff < 1500) {
             severity = 'HIGH';
-            message = `⚠️ HIGH: ${a1.id} and ${a2.id} getting dangerously close! Distance: ${Math.floor(distance)} units`;
+            message = `HIGH: ${a1.id} and ${a2.id} dangerously close! Distance: ${Math.floor(distance)} units`;
           } else {
-            message = `⚠️ MEDIUM: ${a1.id} and ${a2.id} approaching conflict zone`;
+            message = `MEDIUM: ${a1.id} and ${a2.id} approaching conflict zone`;
           }
           
-          const conflictKey = `${a1.id}-${a2.id}`;
-          if (!conflictMap.has(conflictKey)) {
-            conflictMap.set(conflictKey, true);
-            newConflicts.push({
-              id: conflictKey,
-              aircraft1: a1.id,
-              aircraft2: a2.id,
-              distance: Math.floor(distance),
-              altitudeDiff: Math.floor(altitudeDiff),
-              severity: severity,
-              timestamp: Date.now(),
-            });
-            
-            const suggestions = generateSuggestions(a1, a2);
-            allSuggestions.push(...suggestions);
-            
-            newAlerts.push({
-              id: Date.now(),
-              severity: severity,
-              aircraft: [a1.id, a2.id],
-              message: message,
-              timestamp: Date.now(),
-            });
-            
-            dispatch({
-              type: 'ADD_LOG',
-              payload: {
-                id: Date.now(),
-                type: 'CONFLICT',
-                message: `${severity}: ${a1.id} and ${a2.id} conflict detected`,
-                timestamp: new Date().toLocaleTimeString(),
-              },
-            });
-          }
+          newConflicts.push({
+            id: pairKey,
+            aircraft1: a1.id,
+            aircraft2: a2.id,
+            distance: Math.floor(distance),
+            altitudeDiff: Math.floor(altitudeDiff),
+            severity: severity,
+            timestamp: Date.now(),
+          });
+          
+          const suggestions = generateSuggestions(a1, a2);
+          allSuggestions.push(...suggestions);
+          
+          newAlerts.push({
+            id: Date.now() + Math.random(),
+            severity: severity,
+            aircraft: [a1.id, a2.id],
+            message: message,
+            timestamp: Date.now(),
+          });
         }
       }
     }
@@ -167,7 +180,7 @@ export function ATCProvider({ children }) {
       if (state.isSimulating && state.aircraft.length > 1) {
         detectConflicts();
       }
-    }, 2000);
+    }, 3000);
     
     return () => clearInterval(interval);
   }, [state.isSimulating, state.aircraft.length, detectConflicts]);
@@ -179,7 +192,7 @@ export function ATCProvider({ children }) {
   );
 }
 
-export function useATC() {
+export function useATC() { //hook to access ATC context
   const context = useContext(ATCContext);
   if (!context) {
     throw new Error('useATC must be used within an ATCProvider');

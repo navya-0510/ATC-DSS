@@ -2,7 +2,7 @@ import React from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { useATC } from '../context/ATCContext';
 
-const Navbar = () => {
+const Navbar = ({ user, onLogout }) => {
   const location = useLocation();
   const { state, dispatch } = useATC();
   
@@ -41,6 +41,28 @@ const Navbar = () => {
         </div>
         
         <div className="flex items-center space-x-4">
+          {/* User Info */}
+          {user && (
+            <div className="flex items-center space-x-3 border-r border-atc-green/30 pr-4">
+              <div className="text-right">
+                <div className="text-xs text-gray-400">
+                  👤 {user.name}
+                </div>
+                <div className="text-xs">
+                  <span className="text-atc-green">{user.role}</span>
+                  <span className="text-gray-500 mx-1">|</span>
+                  <span className="text-yellow-500">Sector: {user.sector}</span>
+                </div>
+              </div>
+              <button
+                onClick={onLogout}
+                className="text-xs px-2 py-1 bg-red-600/20 text-red-400 rounded hover:bg-red-600/30"
+              >
+                Logout
+              </button>
+            </div>
+          )}
+          
           <div className="flex items-center space-x-2">
             <span className="text-xs text-gray-500">SIM SPEED</span>
             <select

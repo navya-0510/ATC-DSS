@@ -10,6 +10,9 @@ app = Flask(__name__)
 CORS(app)
 
 DATABASE = 'atc_dss.db'
+MAX_AIRCRAFT = 100  # Maximum aircraft limit from class diagram
+CONFLICT_THRESHOLD = 100  # Default conflict threshold
+SCAN_INTERVAL = 3  # Default scan interval in seconds
 
 def get_db():
     conn = sqlite3.connect(DATABASE)
@@ -49,6 +52,9 @@ def init_db():
             aircraft2_id TEXT,
             distance REAL,
             severity TEXT,
+            resolved INTEGER DEFAULT 0,
+            resolution_action TEXT,
+            resolved_at TEXT,
             timestamp TEXT
         )
     ''')
@@ -60,28 +66,54 @@ def init_db():
             severity TEXT,
             aircraft_id TEXT,
             message TEXT,
-            acknowledged INTEGER,
+            acknowledged INTEGER DEFAULT 0,
+            acknowledged_by TEXT,
+            acknowledged_at TEXT,
             timestamp TEXT
+        )
+    ''')
+    
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS action_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            action_type TEXT,
+            aircraft_id TEXT,
+            controller TEXT,
+            details TEXT,
+            timestamp TEXT
+        )
+    ''')
+    
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS waypoints (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            aircraft_id TEXT,
+            sequence INTEGER,
+            lat REAL,
+            lon REAL,
+            altitude REAL,
+            heading REAL,
+            FOREIGN KEY (aircraft_id) REFERENCES aircraft(id)
         )
     ''')
     
     conn.commit()
     conn.close()
 
-def initialize_20_aircraft():
+def initialize_aircraft(count=20):
     conn = get_db()
     cursor = conn.cursor()
     
     # Check if already have aircraft
     cursor.execute("SELECT COUNT(*) FROM aircraft")
-    count = cursor.fetchone()[0]
+    existing_count = cursor.fetchone()[0]
     
-    if count == 0:
+    if existing_count == 0:
         airlines = ['ACA', 'UAL', 'DAL', 'SWA', 'AAL', 'BAW', 'AFR', 'DLH', 'JAL', 'QTR']
         aircraft_types = ['A320', 'B737', 'A380', 'B787', 'A330', 'B777']
         cities = ['JFK', 'LAX', 'LHR', 'CDG', 'DXB', 'HND', 'PEK', 'SYD', 'FRA', 'AMS']
         
-        for i in range(1, 21):
+        for i in range(1, count + 1):
             airline = random.choice(airlines)
             flight_num = random.randint(100, 999)
             aircraft_id = f"{airline}{flight_num:03d}"
@@ -108,8 +140,149 @@ def initialize_20_aircraft():
             ))
         
         conn.commit()
-        print(f"✅ Added 20 aircraft to database")
+        print(f"✅ Added {count} aircraft to database")
     
+    conn.close()
+
+# ============ NEW FUNCTIONS FROM CLASS DIAGRAM ============
+
+def scan_all():
+    """Scan all aircraft for conflicts - from class diagram"""
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM aircraft WHERE status = 'ACTIVE'")
+    aircraft = cursor.fetchall()
+    conn.close()
+    
+    conflicts = []
+    aircraft_list = [dict(a) for a in aircraft]
+    
+    for i in range(len(aircraft_list)):
+        for j in range(i + 1, len(aircraft_list)):
+            a1 = aircraft_list[i]
+            a2 = aircraft_list[j]
+            
+            distance = math.sqrt((a1['x'] - a2['x'])**2 + (a1['y'] - a2['y'])**2)
+            
+            if distance < CONFLICT_THRESHOLD:
+                if distance < 50:
+                    severity = "CRITICAL"
+                elif distance < 80:
+                    severity = "HIGH"
+                else:
+                    severity = "MEDIUM"
+                
+                conflicts.append({
+                    'aircraft1': a1['id'],
+                    'aircraft2': a2['id'],
+                    'distance': round(distance, 2),
+                    'severity': severity
+                })
+                
+                # Save to conflicts table with resolution tracking
+                conn2 = get_db()
+                cursor2 = conn2.cursor()
+                cursor2.execute('''
+                    INSERT INTO conflicts (aircraft1_id, aircraft2_id, distance, severity, resolved, timestamp)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                ''', (a1['id'], a2['id'], distance, severity, 0, datetime.now().isoformat()))
+                conn2.commit()
+                conn2.close()
+    
+    return conflicts
+
+def predict_trajectory(aircraft_id, seconds=30):
+    """Predict aircraft trajectory - from class diagram"""
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM aircraft WHERE id = ?", (aircraft_id,))
+    aircraft = cursor.fetchone()
+    conn.close()
+    
+    if not aircraft:
+        return None
+    
+    aircraft = dict(aircraft)
+    predictions = []
+    steps = seconds // 2
+    
+    for i in range(1, steps + 1):
+        time = i * 2
+        predicted_x = aircraft['x'] + (aircraft['speed'] / 3600) * time * math.cos(aircraft['heading'] * math.pi / 180)
+        predicted_y = aircraft['y'] + (aircraft['speed'] / 3600) * time * math.sin(aircraft['heading'] * math.pi / 180)
+        
+        predictions.append({
+            'time': time,
+            'x': round(predicted_x, 2),
+            'y': round(predicted_y, 2),
+            'altitude': aircraft['altitude']
+        })
+    
+    return predictions
+
+def validate_route(waypoints):
+    """Validate a route with waypoints - from class diagram"""
+    issues = []
+    
+    if not waypoints or len(waypoints) < 2:
+        issues.append('Route must have at least 2 waypoints')
+        return {'isValid': False, 'issues': issues}
+    
+    for i in range(len(waypoints) - 1):
+        current = waypoints[i]
+        next_wp = waypoints[i + 1]
+        
+        # Check turn angles
+        if 'heading' in current and 'heading' in next_wp:
+            turn_angle = abs(next_wp['heading'] - current['heading'])
+            if turn_angle > 90 and turn_angle < 270:
+                actual_turn = turn_angle if turn_angle <= 180 else 360 - turn_angle
+                if actual_turn > 90:
+                    issues.append(f"Sharp turn of {actual_turn}° between waypoint {i + 1} and {i + 2}")
+        
+        # Check altitude changes
+        if 'altitude' in current and 'altitude' in next_wp:
+            altitude_change = abs(next_wp['altitude'] - current['altitude'])
+            if altitude_change > 5000:
+                issues.append(f"Extreme altitude change of {altitude_change}ft between waypoints")
+    
+    return {
+        'isValid': len(issues) == 0,
+        'issues': issues
+    }
+
+def get_route(aircraft_id):
+    """Get formatted route for an aircraft - from class diagram"""
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM waypoints WHERE aircraft_id = ? ORDER BY sequence", (aircraft_id,))
+    waypoints = cursor.fetchall()
+    conn.close()
+    
+    return [dict(wp) for wp in waypoints]
+
+def acknowledge_alert(alert_id, controller_name):
+    """Acknowledge an alert - from class diagram"""
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute('''
+        UPDATE alerts 
+        SET acknowledged = 1, acknowledged_by = ?, acknowledged_at = ?
+        WHERE id = ?
+    ''', (controller_name, datetime.now().isoformat(), alert_id))
+    conn.commit()
+    conn.close()
+    return cursor.rowcount > 0
+
+def log_action(action_type, aircraft_id, controller, details):
+    """Log any action taken by controller"""
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute('''
+        INSERT INTO action_logs (action_type, aircraft_id, controller, details, timestamp)
+        VALUES (?, ?, ?, ?, ?)
+    ''', (action_type, aircraft_id, controller, details, datetime.now().isoformat()))
+    conn.commit()
     conn.close()
 
 # ============ API ENDPOINTS ============
@@ -143,6 +316,14 @@ def add_aircraft():
     conn = get_db()
     cursor = conn.cursor()
     
+    # Check max aircraft limit
+    cursor.execute("SELECT COUNT(*) FROM aircraft")
+    count = cursor.fetchone()[0]
+    
+    if count >= MAX_AIRCRAFT:
+        conn.close()
+        return jsonify({'error': f'Maximum aircraft limit ({MAX_AIRCRAFT}) reached'}), 400
+    
     # Check if exists
     cursor.execute("SELECT id FROM aircraft WHERE id = ?", (data['id'],))
     if cursor.fetchone():
@@ -169,6 +350,9 @@ def add_aircraft():
         datetime.now().isoformat(),
         datetime.now().isoformat()
     ))
+    
+    # Log the action
+    log_action('ADD', data['id'], request.headers.get('X-Controller', 'SYSTEM'), f"Aircraft {data['id']} added")
     
     conn.commit()
     conn.close()
@@ -201,6 +385,9 @@ def update_aircraft(aircraft_id):
         conn.close()
         return jsonify({'error': 'Aircraft not found'}), 404
     
+    # Log the action
+    log_action('UPDATE', aircraft_id, request.headers.get('X-Controller', 'SYSTEM'), f"Aircraft {aircraft_id} updated")
+    
     conn.close()
     return jsonify({'message': 'Aircraft updated'})
 
@@ -210,54 +397,77 @@ def delete_aircraft(aircraft_id):
     cursor = conn.cursor()
     cursor.execute("DELETE FROM aircraft WHERE id = ?", (aircraft_id,))
     conn.commit()
+    
+    # Log the action
+    log_action('DELETE', aircraft_id, request.headers.get('X-Controller', 'SYSTEM'), f"Aircraft {aircraft_id} removed")
+    
     conn.close()
     
     return jsonify({'message': f'Aircraft {aircraft_id} removed'})
 
 @app.route('/api/conflicts', methods=['GET'])
 def detect_conflicts():
+    conflicts = scan_all()
+    return jsonify(conflicts)
+
+@app.route('/api/conflicts/resolve', methods=['POST'])
+def resolve_conflict():
+    data = request.json
+    conflict_id = data.get('conflict_id')
+    resolution_action = data.get('resolution_action')
+    controller = data.get('controller', 'SYSTEM')
+    
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM aircraft WHERE status = 'ACTIVE'")
-    aircraft = cursor.fetchall()
+    cursor.execute('''
+        UPDATE conflicts 
+        SET resolved = 1, resolution_action = ?, resolved_at = ?
+        WHERE id = ?
+    ''', (resolution_action, datetime.now().isoformat(), conflict_id))
+    conn.commit()
     conn.close()
     
-    conflicts = []
-    aircraft_list = [dict(a) for a in aircraft]
+    log_action('RESOLVE', None, controller, f"Conflict {conflict_id} resolved with action: {resolution_action}")
     
-    for i in range(len(aircraft_list)):
-        for j in range(i + 1, len(aircraft_list)):
-            a1 = aircraft_list[i]
-            a2 = aircraft_list[j]
-            
-            distance = math.sqrt((a1['x'] - a2['x'])**2 + (a1['y'] - a2['y'])**2)
-            
-            if distance < 100:
-                if distance < 50:
-                    severity = "CRITICAL"
-                elif distance < 80:
-                    severity = "HIGH"
-                else:
-                    severity = "MEDIUM"
-                
-                conflicts.append({
-                    'aircraft1': a1['id'],
-                    'aircraft2': a2['id'],
-                    'distance': round(distance, 2),
-                    'severity': severity
-                })
-                
-                # Save to conflicts table
-                conn2 = get_db()
-                cursor2 = conn2.cursor()
-                cursor2.execute('''
-                    INSERT INTO conflicts (aircraft1_id, aircraft2_id, distance, severity, timestamp)
-                    VALUES (?, ?, ?, ?, ?)
-                ''', (a1['id'], a2['id'], distance, severity, datetime.now().isoformat()))
-                conn2.commit()
-                conn2.close()
-    
-    return jsonify(conflicts)
+    return jsonify({'message': 'Conflict resolved'})
+
+@app.route('/api/predict/<aircraft_id>', methods=['GET'])
+def get_prediction(aircraft_id):
+    seconds = request.args.get('seconds', 30, type=int)
+    predictions = predict_trajectory(aircraft_id, seconds)
+    if predictions:
+        return jsonify(predictions)
+    return jsonify({'error': 'Aircraft not found'}), 404
+
+@app.route('/api/route/validate', methods=['POST'])
+def validate_route_endpoint():
+    waypoints = request.json.get('waypoints', [])
+    result = validate_route(waypoints)
+    return jsonify(result)
+
+@app.route('/api/route/<aircraft_id>', methods=['GET'])
+def get_aircraft_route(aircraft_id):
+    route = get_route(aircraft_id)
+    return jsonify(route)
+
+@app.route('/api/alerts', methods=['GET'])
+def get_alerts():
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM alerts WHERE acknowledged = 0 ORDER BY timestamp DESC")
+    alerts = cursor.fetchall()
+    conn.close()
+    return jsonify([dict(a) for a in alerts])
+
+@app.route('/api/alerts/<alert_id>/acknowledge', methods=['POST'])
+def acknowledge_alert_endpoint(alert_id):
+    data = request.json
+    controller = data.get('controller', 'SYSTEM')
+    result = acknowledge_alert(alert_id, controller)
+    if result:
+        log_action('ACKNOWLEDGE', None, controller, f"Alert {alert_id} acknowledged")
+        return jsonify({'message': 'Alert acknowledged'})
+    return jsonify({'error': 'Alert not found'}), 404
 
 @app.route('/api/stats/dashboard', methods=['GET'])
 def get_dashboard_stats():
@@ -273,8 +483,14 @@ def get_dashboard_stats():
     cursor.execute("SELECT COUNT(*) FROM aircraft WHERE status = 'EMERGENCY'")
     emergency = cursor.fetchone()[0]
     
+    cursor.execute("SELECT COUNT(*) FROM conflicts WHERE resolved = 0")
+    active_conflicts = cursor.fetchone()[0]
+    
     cursor.execute("SELECT COUNT(*) FROM conflicts")
-    conflicts = cursor.fetchone()[0]
+    total_conflicts = cursor.fetchone()[0]
+    
+    cursor.execute("SELECT COUNT(*) FROM action_logs")
+    total_actions = cursor.fetchone()[0]
     
     conn.close()
     
@@ -282,30 +498,65 @@ def get_dashboard_stats():
         'total_aircraft': total,
         'active_aircraft': active,
         'emergency_aircraft': emergency,
-        'total_conflicts': conflicts,
+        'active_conflicts': active_conflicts,
+        'total_conflicts': total_conflicts,
+        'total_actions': total_actions,
+        'max_aircraft': MAX_AIRCRAFT,
+        'conflict_threshold': CONFLICT_THRESHOLD,
         'timestamp': datetime.now().isoformat()
     })
 
+@app.route('/api/logs', methods=['GET'])
+def get_action_logs():
+    limit = request.args.get('limit', 100, type=int)
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM action_logs ORDER BY timestamp DESC LIMIT ?", (limit,))
+    logs = cursor.fetchall()
+    conn.close()
+    return jsonify([dict(log) for log in logs])
+
 @app.route('/api/health', methods=['GET'])
 def health():
-    return jsonify({'status': 'healthy', 'service': 'ATC-DSS Backend'})
+    return jsonify({
+        'status': 'healthy', 
+        'service': 'ATC-DSS Backend',
+        'max_aircraft': MAX_AIRCRAFT,
+        'conflict_threshold': CONFLICT_THRESHOLD
+    })
+
+@app.route('/api/settings', methods=['GET'])
+def get_settings():
+    return jsonify({
+        'max_aircraft': MAX_AIRCRAFT,
+        'conflict_threshold': CONFLICT_THRESHOLD,
+        'scan_interval': SCAN_INTERVAL
+    })
 
 # ============ INITIALIZE AND RUN ============
 
 if __name__ == '__main__':
     init_db()
-    initialize_20_aircraft()
+    initialize_aircraft(20)  # Initialize with 20 aircraft
     
     print("=" * 50)
     print("🚀 ATC-DSS BACKEND WITH SQLITE")
     print("=" * 50)
     print(f"📍 API: http://localhost:5000")
+    print(f"✈️  Max Aircraft: {MAX_AIRCRAFT}")
+    print(f"⚠️  Conflict Threshold: {CONFLICT_THRESHOLD}")
     print(f"📊 Endpoints:")
     print(f"   GET  /api/aircraft")
     print(f"   POST /api/aircraft")
     print(f"   PUT  /api/aircraft/<id>")
     print(f"   DELETE /api/aircraft/<id>")
     print(f"   GET  /api/conflicts")
+    print(f"   POST /api/conflicts/resolve")
+    print(f"   GET  /api/predict/<id>")
+    print(f"   POST /api/route/validate")
+    print(f"   GET  /api/alerts")
+    print(f"   POST /api/alerts/<id>/acknowledge")
+    print(f"   GET  /api/logs")
     print(f"   GET  /api/stats/dashboard")
     print("=" * 50)
     

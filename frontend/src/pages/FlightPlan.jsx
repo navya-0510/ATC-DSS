@@ -1,10 +1,12 @@
 import React, { useState } from 'react';
 import { useATC } from '../context/ATCContext';
 
+const API_BASE = 'http://localhost:5000/api';
+
 const FlightPlan = () => {
   const { state, dispatch } = useATC();
   const [showAddForm, setShowAddForm] = useState(false);
-  const [editingAircraft, setEditingAircraft] = useState(null);
+  const [editingId, setEditingId] = useState(null);
   const [newAircraft, setNewAircraft] = useState({
     id: '',
     x: 600,
@@ -14,64 +16,88 @@ const FlightPlan = () => {
     heading: 0,
   });
   
-  const handleAddAircraft = () => {
+  const handleAdd = async () => {
     if (!newAircraft.id) {
-      alert('Please enter an aircraft ID');
+      alert('Please enter aircraft ID');
       return;
     }
     
-    dispatch({ type: 'ADD_AIRCRAFT', payload: newAircraft });
-    dispatch({
-      type: 'ADD_LOG',
-      payload: {
-        id: Date.now(),
-        type: 'ADD',
-        message: `✈️ Aircraft ${newAircraft.id} added via flight plan`,
-        timestamp: new Date().toLocaleTimeString(),
-      },
-    });
+    if (state.aircraft.some(a => a.id === newAircraft.id)) {
+      alert('Aircraft ID already exists');
+      return;
+    }
     
-    setNewAircraft({
-      id: '',
-      x: Math.random() * 800 + 200,
-      y: Math.random() * 500 + 150,
-      altitude: 35000,
-      speed: 450,
-      heading: 0,
-    });
-    setShowAddForm(false);
+    try {
+      await fetch(`${API_BASE}/aircraft`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(newAircraft)
+      });
+      
+      dispatch({ type: 'ADD_AIRCRAFT', payload: newAircraft });
+      dispatch({
+        type: 'ADD_LOG',
+        payload: {
+          id: Date.now(),
+          type: 'ADD',
+          message: `✈️ Added ${newAircraft.id}`,
+          timestamp: new Date().toLocaleTimeString(),
+        },
+      });
+      
+      setNewAircraft({ id: '', x: 600, y: 400, altitude: 35000, speed: 450, heading: 0 });
+      setShowAddForm(false);
+    } catch (error) {
+      // Fallback - add locally only
+      dispatch({ type: 'ADD_AIRCRAFT', payload: newAircraft });
+      setNewAircraft({ id: '', x: 600, y: 400, altitude: 35000, speed: 450, heading: 0 });
+      setShowAddForm(false);
+    }
   };
   
-  const handleRemoveAircraft = (aircraftId) => {
-    if (window.confirm(`Are you sure you want to remove ${aircraftId}?`)) {
-      dispatch({ type: 'REMOVE_AIRCRAFT', payload: aircraftId });
+  const handleRemove = async (id) => {
+    if (window.confirm(`Remove ${id}?`)) {
+      try {
+        await fetch(`${API_BASE}/aircraft/${id}`, { method: 'DELETE' });
+      } catch (error) {
+        console.error('Backend delete failed');
+      }
+      
+      dispatch({ type: 'REMOVE_AIRCRAFT', payload: id });
       dispatch({
         type: 'ADD_LOG',
         payload: {
           id: Date.now(),
           type: 'REMOVE',
-          message: `❌ Aircraft ${aircraftId} removed from airspace`,
+          message: `❌ Removed ${id}`,
           timestamp: new Date().toLocaleTimeString(),
         },
       });
     }
   };
   
-  const handleUpdateAircraft = (aircraft, updates) => {
-    dispatch({
-      type: 'UPDATE_AIRCRAFT',
-      payload: { id: aircraft.id, updates: updates },
-    });
+  const handleUpdate = async (id, updates) => {
+    try {
+      await fetch(`${API_BASE}/aircraft/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updates)
+      });
+    } catch (error) {
+      console.error('Backend update failed');
+    }
+    
+    dispatch({ type: 'UPDATE_AIRCRAFT', payload: { id, updates } });
     dispatch({
       type: 'ADD_LOG',
       payload: {
         id: Date.now(),
         type: 'UPDATE',
-        message: `📝 Aircraft ${aircraft.id} updated`,
+        message: `📝 Updated ${id}`,
         timestamp: new Date().toLocaleTimeString(),
       },
     });
-    setEditingAircraft(null);
+    setEditingId(null);
   };
   
   return (
@@ -81,7 +107,7 @@ const FlightPlan = () => {
           <h1 className="text-2xl font-bold text-atc-green font-mono">✈️ Flight Plan Management</h1>
           <button
             onClick={() => setShowAddForm(!showAddForm)}
-            className="px-4 py-2 bg-atc-green text-black rounded-md font-bold hover:bg-atc-green/80 transition-colors cursor-pointer"
+            className="px-4 py-2 bg-atc-green text-black rounded-md font-bold hover:bg-atc-green/80 cursor-pointer"
           >
             {showAddForm ? '− CANCEL' : '+ NEW FLIGHT PLAN'}
           </button>
@@ -102,7 +128,7 @@ const FlightPlan = () => {
                 />
               </div>
               <div>
-                <label className="block text-xs text-gray-400 mb-1">Initial X Position</label>
+                <label className="block text-xs text-gray-400 mb-1">X Position</label>
                 <input
                   type="number"
                   value={newAircraft.x}
@@ -111,7 +137,7 @@ const FlightPlan = () => {
                 />
               </div>
               <div>
-                <label className="block text-xs text-gray-400 mb-1">Initial Y Position</label>
+                <label className="block text-xs text-gray-400 mb-1">Y Position</label>
                 <input
                   type="number"
                   value={newAircraft.y}
@@ -149,7 +175,7 @@ const FlightPlan = () => {
             </div>
             <div className="mt-4 flex justify-end">
               <button
-                onClick={handleAddAircraft}
+                onClick={handleAdd}
                 className="px-6 py-2 bg-atc-green text-black rounded-md font-bold hover:bg-atc-green/80 cursor-pointer"
               >
                 ADD TO AIRSPACE
@@ -161,56 +187,20 @@ const FlightPlan = () => {
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {state.aircraft.map(aircraft => (
             <div key={aircraft.id} className="bg-atc-darker/90 border border-atc-green/30 rounded-lg p-4">
-              {editingAircraft === aircraft.id ? (
+              {editingId === aircraft.id ? (
                 <>
                   <h3 className="text-atc-green font-bold mb-3">Edit {aircraft.id}</h3>
-                  <div className="space-y-2">
-                    <div>
-                      <label className="text-xs text-gray-400">Altitude (ft)</label>
-                      <input
-                        type="number"
-                        id={`alt-${aircraft.id}`}
-                        defaultValue={aircraft.altitude}
-                        className="w-full bg-black/50 border border-gray-600 rounded px-2 py-1 text-sm"
-                      />
-                    </div>
-                    <div>
-                      <label className="text-xs text-gray-400">Speed (kts)</label>
-                      <input
-                        type="number"
-                        id={`speed-${aircraft.id}`}
-                        defaultValue={aircraft.speed}
-                        className="w-full bg-black/50 border border-gray-600 rounded px-2 py-1 text-sm"
-                      />
-                    </div>
-                    <div>
-                      <label className="text-xs text-gray-400">Heading (°)</label>
-                      <input
-                        type="number"
-                        id={`heading-${aircraft.id}`}
-                        defaultValue={aircraft.heading}
-                        className="w-full bg-black/50 border border-gray-600 rounded px-2 py-1 text-sm"
-                      />
-                    </div>
-                    <div className="flex space-x-2 mt-3">
-                      <button
-                        onClick={() => {
-                          const newAltitude = parseInt(document.getElementById(`alt-${aircraft.id}`).value);
-                          const newSpeed = parseInt(document.getElementById(`speed-${aircraft.id}`).value);
-                          const newHeading = parseInt(document.getElementById(`heading-${aircraft.id}`).value);
-                          handleUpdateAircraft(aircraft, { altitude: newAltitude, speed: newSpeed, heading: newHeading });
-                        }}
-                        className="flex-1 px-2 py-1 bg-atc-green text-black rounded text-sm font-bold cursor-pointer"
-                      >
-                        Save
-                      </button>
-                      <button
-                        onClick={() => setEditingAircraft(null)}
-                        className="flex-1 px-2 py-1 bg-gray-600 rounded text-sm cursor-pointer"
-                      >
-                        Cancel
-                      </button>
-                    </div>
+                  <input type="number" id={`alt-${aircraft.id}`} defaultValue={aircraft.altitude} className="w-full bg-black/50 border border-gray-600 rounded px-2 py-1 mb-2" placeholder="Altitude" />
+                  <input type="number" id={`spd-${aircraft.id}`} defaultValue={aircraft.speed} className="w-full bg-black/50 border border-gray-600 rounded px-2 py-1 mb-2" placeholder="Speed" />
+                  <input type="number" id={`hdg-${aircraft.id}`} defaultValue={aircraft.heading} className="w-full bg-black/50 border border-gray-600 rounded px-2 py-1 mb-2" placeholder="Heading" />
+                  <div className="flex space-x-2">
+                    <button onClick={() => {
+                      const newAlt = parseInt(document.getElementById(`alt-${aircraft.id}`).value);
+                      const newSpd = parseInt(document.getElementById(`spd-${aircraft.id}`).value);
+                      const newHdg = parseInt(document.getElementById(`hdg-${aircraft.id}`).value);
+                      handleUpdate(aircraft.id, { altitude: newAlt, speed: newSpd, heading: newHdg });
+                    }} className="flex-1 bg-atc-green text-black py-1 rounded">Save</button>
+                    <button onClick={() => setEditingId(null)} className="flex-1 bg-gray-600 py-1 rounded">Cancel</button>
                   </div>
                 </>
               ) : (
@@ -218,41 +208,15 @@ const FlightPlan = () => {
                   <div className="flex justify-between items-center mb-2">
                     <h3 className="text-atc-green font-bold text-lg">{aircraft.id}</h3>
                     <div className="space-x-2">
-                      <button
-                        onClick={() => setEditingAircraft(aircraft.id)}
-                        className="text-xs px-2 py-1 bg-blue-600 hover:bg-blue-700 rounded cursor-pointer"
-                      >
-                        Edit
-                      </button>
-                      <button
-                        onClick={() => handleRemoveAircraft(aircraft.id)}
-                        className="text-xs px-2 py-1 bg-red-600 hover:bg-red-700 rounded cursor-pointer"
-                      >
-                        Remove
-                      </button>
+                      <button onClick={() => setEditingId(aircraft.id)} className="text-xs px-2 py-1 bg-blue-600 rounded">Edit</button>
+                      <button onClick={() => handleRemove(aircraft.id)} className="text-xs px-2 py-1 bg-red-600 rounded">Remove</button>
                     </div>
                   </div>
                   <div className="grid grid-cols-2 gap-2 text-sm">
-                    <div>
-                      <span className="text-gray-400">Position:</span>
-                      <br />
-                      <span className="font-mono">({Math.floor(aircraft.x)}, {Math.floor(aircraft.y)})</span>
-                    </div>
-                    <div>
-                      <span className="text-gray-400">Altitude:</span>
-                      <br />
-                      <span className="font-mono">{Math.floor(aircraft.altitude)} ft</span>
-                    </div>
-                    <div>
-                      <span className="text-gray-400">Speed:</span>
-                      <br />
-                      <span className="font-mono">{aircraft.speed} kts</span>
-                    </div>
-                    <div>
-                      <span className="text-gray-400">Heading:</span>
-                      <br />
-                      <span className="font-mono">{aircraft.heading}°</span>
-                    </div>
+                    <div>Position:<br/><span className="font-mono">({Math.floor(aircraft.x)}, {Math.floor(aircraft.y)})</span></div>
+                    <div>Altitude:<br/><span className="font-mono">{Math.floor(aircraft.altitude)} ft</span></div>
+                    <div>Speed:<br/><span className="font-mono">{aircraft.speed} kts</span></div>
+                    <div>Heading:<br/><span className="font-mono">{aircraft.heading}°</span></div>
                   </div>
                 </>
               )}
